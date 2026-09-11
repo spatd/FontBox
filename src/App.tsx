@@ -1,185 +1,65 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlignCenter, AlignLeft, AlignRight, Download, Heart, Library, Moon, PenLine, Plus, Search, Settings, ShieldCheck, Sun, Trash2, Upload, X } from 'lucide-react'
-import { getFonts, removeFont, saveFont } from './lib/fontStorage'
-import { fontFamilyFor, loadStoredFont, unloadStoredFont } from './lib/fontLoader'
-import { exportFontPng } from './lib/pngExport'
-import type { ExportSettings, StoredFont } from './types'
+import { useEffect,useMemo,useRef,useState } from 'react'
+import { AlignCenter,AlignLeft,AlignRight,CaseSensitive,ChevronDown,CloudOff,Download,Heart,Highlighter,Library,Palette,PenLine,Plus,Settings,Share2,Sparkles,Type,Underline,X } from 'lucide-react'
+import { getFonts,removeFont,saveFont } from './lib/fontStorage'
+import { enrichFont,readFontMetadata } from './lib/fontMetadata'
+import { loadStoredFont,unloadStoredFont } from './lib/fontLoader'
+import { EXPORT_SCALE } from './lib/pngExport'
+import { canvasToBlob,dataUrlToBlob,renderTypography,saveBlob } from './lib/textRenderer'
+import type { FontFamily,StoredFont,TextStyle } from './types'
 
-type Tab = 'fonts' | 'editor' | 'settings'
-const ACCEPTED = ['.ttf', '.otf', '.woff', '.woff2']
-const DEFAULT_TEXT = 'Сәлем, әлем!\nBeautiful type.'
-const DEFAULT_EXPORT: ExportSettings = { size: 144, color: '#111111', alignment: 'left', padding: 96, transparent: true }
+type Tab='fonts'|'editor'|'settings';type Tool='font'|'style'|'color'|'marker'|'case'|'curve'|'stroke'|'shadow'|'spacing'|'align'|null
+const ACCEPT='.ttf,.otf,.woff,.woff2';const SAMPLE='Тур в Дубай';
+const DEFAULT_STYLE:TextStyle={fontSize:112,color:'#111111',caseMode:'original',marker:{mode:'off',color:'#ffd83d',opacity:1,paddingX:18,paddingY:8,radius:14},curve:0,stroke:{enabled:false,color:'#000000',width:2},shadow:{enabled:false,color:'#000000',opacity:.4,blur:8,x:4,y:4},letterSpacing:0,lineHeight:1.2,alignment:'center',padding:40}
+const parse=<T,>(key:string,fallback:T):T=>{try{return JSON.parse(localStorage.getItem(key)||'') as T}catch{return fallback}}
 
-function App() {
-  const [fonts, setFonts] = useState<StoredFont[]>([])
-  const [loaded, setLoaded] = useState<Set<string>>(new Set())
-  const [text, setText] = useState(() => localStorage.getItem('fontbox-text') || DEFAULT_TEXT)
-  const [query, setQuery] = useState('')
-  const [tab, setTab] = useState<Tab>('fonts')
-  const [theme, setTheme] = useState<'system' | 'light' | 'dark'>(() => (localStorage.getItem('fontbox-theme') as 'system' | 'light' | 'dark') || 'system')
-  const [exportFont, setExportFont] = useState<StoredFont | null>(null)
-  const [exportSettings, setExportSettings] = useState<ExportSettings>(DEFAULT_EXPORT)
-  const [notice, setNotice] = useState('')
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    getFonts().then(async stored => {
-      setFonts(stored)
-      const results = await Promise.allSettled(stored.map(loadStoredFont))
-      setLoaded(new Set(stored.filter((_, i) => results[i].status === 'fulfilled').map(font => font.id)))
-    }).catch(() => showNotice('Could not open local font storage.'))
-  }, [])
-
-  useEffect(() => {
-    localStorage.setItem('fontbox-text', text)
-  }, [text])
-
-  useEffect(() => {
-    localStorage.setItem('fontbox-theme', theme)
-    document.documentElement.dataset.theme = theme
-  }, [theme])
-
-  useEffect(() => {
-    const context = document.modelContext
-    if (!context?.registerTool) return
-    const lifecycle = new AbortController()
-    void Promise.resolve(context.registerTool({
-      name: 'set_preview_text',
-      title: 'Set preview text',
-      description: 'Set the text shown in every FontBox font preview.',
-      inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
-      annotations: { readOnlyHint: false, untrustedContentHint: false },
-      execute(input: unknown) {
-        const value = input as { text?: unknown }
-        if (typeof value.text !== 'string') throw new Error('Text must be a string.')
-        setText(value.text)
-        setTab('editor')
-        return { text: value.text, updated: true }
-      },
-    }, { signal: lifecycle.signal })).catch(() => undefined)
-    return () => lifecycle.abort()
-  }, [])
-
-  const sortedFonts = useMemo(() => fonts
-    .filter(font => font.name.toLowerCase().includes(query.toLowerCase()))
-    .sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.dateAdded - a.dateAdded), [fonts, query])
-
-  function showNotice(message: string) {
-    setNotice(message)
-    window.setTimeout(() => setNotice(''), 2600)
-  }
-
-  async function handleFiles(files: FileList | null) {
-    if (!files) return
-    for (const file of Array.from(files)) {
-      if (!ACCEPTED.some(ext => file.name.toLowerCase().endsWith(ext))) {
-        showNotice(`${file.name} is not a supported font.`)
-        continue
-      }
-      const name = file.name.replace(/\.(ttf|otf|woff2?)$/i, '')
-      const font: StoredFont = { id: crypto.randomUUID(), name, filename: file.name, dateAdded: Date.now(), favorite: false, blob: file }
-      try {
-        await loadStoredFont(font)
-        await saveFont(font)
-        setLoaded(current => new Set(current).add(font.id))
-        setFonts(current => [...current, font])
-        showNotice(`${name} added to FontBox.`)
-      } catch {
-        unloadStoredFont(font.id)
-        showNotice(`${file.name} could not be loaded.`)
-      }
-    }
-    if (inputRef.current) inputRef.current.value = ''
-  }
-
-  async function updateFont(font: StoredFont, changes: Partial<StoredFont>) {
-    const updated = { ...font, ...changes }
-    await saveFont(updated)
-    setFonts(current => current.map(item => item.id === updated.id ? updated : item))
-  }
-
-  async function deleteFont(font: StoredFont) {
-    if (!window.confirm(`Delete “${font.name}”? The stored font file will be removed from this device.`)) return
-    await removeFont(font.id)
-    unloadStoredFont(font.id)
-    setFonts(current => current.filter(item => item.id !== font.id))
-    showNotice('Font deleted.')
-  }
-
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand"><span className="brand-mark">F</span><span>FontBox</span></div>
-        <button className="icon-button" aria-label="Add fonts" onClick={() => inputRef.current?.click()}><Plus size={22} /></button>
-        <input ref={inputRef} hidden type="file" multiple accept={ACCEPTED.join(',')} onChange={event => handleFiles(event.target.files)} />
-      </header>
-
-      <main>
-        {tab === 'fonts' && <section className="view">
-          <div className="headline-row"><div><p className="eyebrow">Your library</p><h1>{fonts.length} {fonts.length === 1 ? 'font' : 'fonts'}</h1></div><div className="local-badge"><ShieldCheck size={15} /> On device</div></div>
-          {fonts.length > 0 && <label className="search"><Search size={19} /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search fonts" aria-label="Search fonts" />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={18} /></button>}</label>}
-          {fonts.length === 0 ? <EmptyState onUpload={() => inputRef.current?.click()} /> : <div className="font-list">
-            {sortedFonts.map(font => <FontCard key={font.id} font={font} text={text} loaded={loaded.has(font.id)} onFavorite={() => updateFont(font, { favorite: !font.favorite })} onRename={() => { const name = window.prompt('Font name', font.name)?.trim(); if (name) updateFont(font, { name }) }} onDelete={() => deleteFont(font)} onExport={() => setExportFont(font)} />)}
-            {sortedFonts.length === 0 && <div className="empty-search">No fonts match “{query}”.</div>}
-          </div>}
-        </section>}
-
-        {tab === 'editor' && <section className="view editor-view">
-          <p className="eyebrow">Live specimen</p><h1>Preview text</h1>
-          <textarea className="text-editor" value={text} onChange={e => setText(e.target.value)} aria-label="Preview text" placeholder="Type anything…" />
-          <div className="editor-meta"><span>{text.length} characters</span><button onClick={() => setText(DEFAULT_TEXT)}>Reset sample</button></div>
-          <h2>Quick preview</h2>
-          {fonts.length ? <div className="font-list compact">{sortedFonts.slice(0, 4).map(font => <FontCard key={font.id} font={font} text={text} loaded={loaded.has(font.id)} onFavorite={() => updateFont(font, { favorite: !font.favorite })} onRename={() => {}} onDelete={() => {}} onExport={() => setExportFont(font)} compact />)}</div> : <button className="inline-upload" onClick={() => inputRef.current?.click()}><Upload size={18} /> Add a font to begin</button>}
-        </section>}
-
-        {tab === 'settings' && <section className="view settings-view">
-          <p className="eyebrow">Preferences</p><h1>Settings</h1>
-          <div className="settings-card"><div><h2>Appearance</h2><p>Choose how FontBox looks on this device.</p></div><div className="segmented">{(['system','light','dark'] as const).map(value => <button key={value} className={theme === value ? 'active' : ''} onClick={() => setTheme(value)}>{value === 'light' ? <Sun size={17}/> : value === 'dark' ? <Moon size={17}/> : null}{value[0].toUpperCase()+value.slice(1)}</button>)}</div></div>
-          <div className="settings-card privacy"><ShieldCheck size={24}/><div><h2>Private by design</h2><p>Font files, favorites, and preview text stay in this browser. FontBox has no server, accounts, analytics, or external requests.</p></div></div>
-          <div className="settings-card"><div><h2>Local library</h2><p>{fonts.length} uploaded {fonts.length === 1 ? 'font' : 'fonts'} stored in IndexedDB.</p></div><button className="secondary-button" onClick={() => inputRef.current?.click()}><Plus size={18}/> Add fonts</button></div>
-        </section>}
-      </main>
-
-      <nav className="bottom-nav" aria-label="Main navigation">
-        <NavButton active={tab === 'fonts'} onClick={() => setTab('fonts')} icon={<Library />} label="Fonts" />
-        <NavButton active={tab === 'editor'} onClick={() => setTab('editor')} icon={<PenLine />} label="Editor" />
-        <NavButton active={tab === 'settings'} onClick={() => setTab('settings')} icon={<Settings />} label="Settings" />
-      </nav>
-      {exportFont && <ExportSheet font={exportFont} text={text} settings={exportSettings} setSettings={setExportSettings} onClose={() => setExportFont(null)} onExport={async () => { await exportFontPng(exportFont, text, exportSettings); showNotice('PNG exported.'); }} />}
-      {notice && <div className="toast" role="status">{notice}</div>}
-    </div>
-  )
+export default function App(){
+ const [fonts,setFonts]=TargetedState<StoredFont[]>([]);const [tab,setTab]=useState<Tab>('editor');const [text,setText]=useState(()=>localStorage.getItem('fontbox-text')||SAMPLE);const [style,setStyle]=useState<TextStyle>(()=>parse('fontbox-editor-style',DEFAULT_STYLE));const [selectedFamily,setSelectedFamily]=useState(()=>localStorage.getItem('fontbox-selected-family')||'');const [variantMap,setVariantMap]=useState<Record<string,string>>(()=>parse('fontbox-variants',{}));const [tool,setTool]=useState<Tool>(null);const [ready,setReady]=useState(false);const [rendering,setRendering]=useState(false);const [notice,setNotice]=useState('');const [fallback,setFallback]=useState<Blob|null>(null);const [recentColors,setRecentColors]=useState<string[]>(()=>parse('fontbox-colors',[]));const [query,setQuery]=useState('');const fileRef=useRef<HTMLInputElement>(null);const previewRef=useRef<HTMLCanvasElement>(null);const renderedRef=useRef<HTMLCanvasElement|null>(null)
+ const families=useMemo(()=>groupFonts(fonts),[fonts]);const currentFamily=families.find(f=>f.id===selectedFamily)||families[0];const selectedId=currentFamily?(variantMap[currentFamily.id]||currentFamily.variants[0]?.id):'';const variant=currentFamily?.variants.find(v=>v.id===selectedId)||currentFamily?.variants[0]
+ useEffect(()=>{getFonts().then(async stored=>{const migrated=await Promise.all(stored.map(enrichFont));await Promise.all(migrated.map(async f=>{await loadStoredFont(f);if(f!==stored.find(x=>x.id===f.id)||!stored.find(x=>x.id===f.id)?.familyName)await saveFont(f)}));setFonts(migrated);setReady(true)}).catch(()=>{toast('Local storage could not be opened');setReady(true)})},[])
+ useEffect(()=>{if(!selectedFamily&&families[0])setSelectedFamily(families[0].id)},[families,selectedFamily]);useEffect(()=>{localStorage.setItem('fontbox-text',text)},[text]);useEffect(()=>{localStorage.setItem('fontbox-editor-style',JSON.stringify(style))},[style]);useEffect(()=>{localStorage.setItem('fontbox-variants',JSON.stringify(variantMap))},[variantMap]);useEffect(()=>{if(selectedFamily)localStorage.setItem('fontbox-selected-family',selectedFamily)},[selectedFamily])
+ useEffect(()=>{if(!variant)return;let cancelled=false;setRendering(true);renderTypography(text,variant,style,EXPORT_SCALE).then(canvas=>{if(cancelled)return;renderedRef.current=canvas;const visible=previewRef.current;if(visible){visible.width=canvas.width;visible.height=canvas.height;visible.getContext('2d')?.drawImage(canvas,0,0)}setRendering(false)}).catch(()=>{if(!cancelled){toast('This font could not be rendered');setRendering(false)}});return()=>{cancelled=true}},[text,variant,style])
+ function toast(message:string){setNotice(message);window.setTimeout(()=>setNotice(''),1500)}
+ async function upload(list:FileList|null){if(!list)return;for(const file of Array.from(list)){if(!/\.(ttf|otf|woff2?)$/i.test(file.name)){toast('Unsupported font file');continue}try{const meta=await readFontMetadata(file,file.name);const font:StoredFont={id:crypto.randomUUID(),name:meta.fullName||file.name,filename:file.name,dateAdded:Date.now(),favorite:false,blob:file,...meta};await loadStoredFont(font);await saveFont(font);setFonts(v=>[...v,font]);setSelectedFamily(slug(font.familyName||font.name))}catch{toast(`${file.name} could not be loaded`)}}if(fileRef.current)fileRef.current.value=''}
+ function selectVariant(id:string){if(currentFamily)setVariantMap(v=>({...v,[currentFamily.id]:id}))}
+ function updateStyle(patch:Partial<TextStyle>){setStyle(v=>({...v,...patch}))}function color(value:string){updateStyle({color:value});const next=[value,...recentColors.filter(c=>c!==value)].slice(0,6);setRecentColors(next);localStorage.setItem('fontbox-colors',JSON.stringify(next))}
+ async function copyRenderedText(){const canvas=renderedRef.current;if(!canvas||rendering||!variant)return;try{const pngBlob=dataUrlToBlob(canvas.toDataURL('image/png'));if(!navigator.clipboard?.write||typeof ClipboardItem==='undefined')throw new Error('Image clipboard unavailable');const promise=navigator.clipboard.write([new ClipboardItem({'image/png':pngBlob})]);await promise;toast('Copied')}catch{try{setFallback(await canvasToBlob(canvas))}catch{toast('Could not create PNG')}}}
+ async function remove(f:StoredFont){if(!confirm(`Delete ${f.fullName||f.filename}?`))return;await removeFont(f.id);unloadStoredFont(f.id);setFonts(v=>v.filter(x=>x.id!==f.id))}
+ return <div className="app"><input ref={fileRef} hidden type="file" accept={ACCEPT} multiple onChange={e=>upload(e.target.files)}/><header><div className="brand"><b>F</b>FontBox</div><button className="circle" onClick={()=>fileRef.current?.click()} aria-label="Add fonts"><Plus/></button></header>
+ <main>
+ {tab==='editor'&&<section className="editor"><textarea value={text} onChange={e=>setText(e.target.value)} placeholder="Type something…" aria-label="Text to design"/><div className="preview-stage">{variant?<canvas ref={previewRef} aria-label="Typography preview"/>:<div className="start"><Type/><strong>Add a font to begin</strong><button onClick={()=>fileRef.current?.click()}>Choose font files</button></div>}{rendering&&<span className="rendering">Rendering…</span>}</div>{text.includes('\n')&&style.curve!==0&&<p className="hint">Curve is paused for multiline text.</p>}
+ <div className="toolstrip">{TOOLS.map(([id,label,Icon])=><button key={id} className={tool===id?'active':''} onClick={()=>setTool(tool===id?null:id)}><Icon/><span>{label}</span></button>)}</div>
+ <div className="-selector">{families.map(f=><button key={f.id} className={f.id===currentFamily?.id?'active':''} onClick={()=>{setSelectedFamily(f.id);setTool(null)}} style={{fontFamily:f.variants[0]?`FontBox_${familyHash(f.familyName)}`:undefined}}>{f.familyName}</button>)}{!families.length&&<button onClick={()=>fileRef.current?.click()}><Plus/> Add fonts</button>}</div>{currentFamily&&<button className="variant-chip" onClick={()=>setTool('style')}>{variant?.subfamilyName||'Regular'}<ChevronDown/></button>}</section>}
+ {tab==='fonts'&&<LibraryView families={families} query={query} setQuery={setQuery} onUpload={()=>fileRef.current?.click()} onFavorite={async f=>{const favorite=!f.favorite;await Promise.all(f.variants.map(v=>saveFont({...v,favorite})));setFonts(all=>all.map(v=>f.variants.some(x=>x.id===v.id)?{...v,favorite}:v))}} onDelete={remove}/>} 
+ {tab==='settings'&&<section className="settings"><p className="eyebrow">Preferences</p><h1>Settings</h1><div className="setting-row"><CloudOff/><div><strong>Everything stays here</strong><p>Fonts and designs are stored on this device. FontBox has no server, account, or analytics.</p></div></div><div className="setting-row"><Type/><div><strong>{families.length} font {families.length===1?'family':'families'}</strong><p>{fonts.length} local font {fonts.length===1?'file':'files'} available offline.</p></div></div></section>}
+ </main>
+ {tab==='editor'&&<div className="copy-dock"><button onClick={copyRenderedText} disabled={!variant||rendering}><span>{rendering?'Preparing…':'Copy'}</span><small>Transparent PNG</small></button></div>}
+ <nav><Nav active={tab==='fonts'} onClick={()=>setTab('fonts')} icon={<Library/>} label="Fonts"/><Nav active={tab==='editor'} onClick={()=>setTab('editor')} icon={<PenLine/>} label="Editor"/><Nav active={tab==='settings'} onClick={()=>setTab('settings')} icon={<Settings/>} label="Settings"/></nav>
+ {tool&&<ToolSheet tool={tool} close={()=>setTool(null)} families={families} family={currentFamily} variant={variant} selectFamily={setSelectedFamily} selectVariant={selectVariant} style={style} setStyle={updateStyle} color={color} recent={recentColors}/>} {fallback&&<FallbackSheet blob={fallback} close={()=>setFallback(null)}/>} {notice&&<div className="toast" role="status">{notice}</div>}
+ </div>
 }
 
-function EmptyState({ onUpload }: { onUpload: () => void }) {
-  return <div className="empty-state"><div className="empty-glyph">Aa</div><h2>Build your font box</h2><p>Add TTF, OTF, WOFF, or WOFF2 files. They stay on this device and work offline.</p><button className="primary-button" onClick={onUpload}><Upload size={19}/> Choose font files</button></div>
-}
+function TargetedState<T>(initial:T){return useState<T>(initial)}
+function slug(s:string){return s.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu,'-')}
+function familyHash(name:string){let h=0;for(let i=0;i<name.length;i++)h=((h<<5)-h+name.charCodeAt(i))|0;return Math.abs(h)}
+function groupFonts(fonts:StoredFont[]):FontFamily[]{const map=new Map<string,FontFamily>();fonts.forEach(f=>{const familyName=f.familyName||f.name,id=slug(familyName);const found=map.get(id);if(found){found.variants.push(f);found.favorite||=f.favorite}else map.set(id,{id,familyName,variants:[f],favorite:f.favorite})});return [...map.values()].map(f=>({...f,variants:f.variants.sort((a,b)=>(a.weight||400)-(b.weight||400)||(a.style==='italic'?1:0)-(b.style==='italic'?1:0))})).sort((a,b)=>Number(b.favorite)-Number(a.favorite)||a.familyName.localeCompare(b.familyName))}
+const TOOLS=[['font','Font',Type],['style','Style',Sparkles],['color','Color',Palette],['marker','Marker',Highlighter],['case','Case',CaseSensitive],['curve','Curve',Underline],['stroke','Stroke',Type],['shadow','Shadow',Sparkles],['spacing','Spacing',Underline],['align','Align',AlignCenter]] as const
+function Nav({active,onClick,icon,label}:{active:boolean;onClick:()=>void;icon:React.ReactNode;label:string}){return <button className={active?'active':''} onClick={onClick}>{icon}<span>{label}</span></button>}
 
-type CardProps = { font: StoredFont; text: string; loaded: boolean; onFavorite: () => void; onRename: () => void; onDelete: () => void; onExport: () => void; compact?: boolean }
-function FontCard({ font, text, loaded, onFavorite, onRename, onDelete, onExport, compact }: CardProps) {
-  return <article className="font-card">
-    <div className="card-header"><button className="font-name" onClick={compact ? undefined : onRename} title={compact ? undefined : 'Rename font'}>{font.name}</button><button className={`heart ${font.favorite ? 'active' : ''}`} onClick={onFavorite} aria-label={font.favorite ? 'Remove from favorites' : 'Add to favorites'}><Heart size={20} fill={font.favorite ? 'currentColor' : 'none'} /></button></div>
-    <div className="preview-text" style={{ fontFamily: loaded ? `"${fontFamilyFor(font.id)}"` : 'inherit' }}>{loaded ? text || ' ' : 'Loading font…'}</div>
-    <div className="card-footer"><span>{font.filename.split('.').pop()?.toUpperCase()} · {new Date(font.dateAdded).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span><div className="card-actions">{!compact && <button onClick={onDelete} aria-label={`Delete ${font.name}`}><Trash2 size={18}/></button>}<button className="export-button" onClick={onExport}><Download size={17}/> Export PNG</button></div></div>
-  </article>
-}
+function LibraryView({families,query,setQuery,onUpload,onFavorite,onDelete}:{families:FontFamily[];query:string;setQuery:(s:string)=>void;onUpload:()=>void;onFavorite:(f:FontFamily)=>void;onDelete:(f:StoredFont)=>void}){const shown=families.filter(f=>f.familyName.toLowerCase().includes(query.toLowerCase()));return <section className="library"><div className="title-row"><div><p className="eyebrow">Your library</p><h1>{families.length} {families.length===1?'family':'families'}</h1></div><button className="add" onClick={onUpload}><Plus/>Add</button></div>{families.length>0&&<input className="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search families"/>}{!families.length?<div className="empty"><Type/><h2>Your fonts, neatly grouped</h2><p>Upload TTF, OTF, WOFF, or WOFF2 files. Variants are automatically organized by family.</p><button onClick={onUpload}>Choose font files</button></div>:<div className="family-list">{shown.map(f=><article key={f.id}><div className="family-head"><div><strong>{f.familyName}</strong><small>{f.variants.length} {f.variants.length===1?'style':'styles'}</small></div><button onClick={()=>onFavorite(f)} aria-label="Favorite family"><Heart fill={f.favorite?'currentColor':'none'}/></button></div><div className="family-sample" style={{fontFamily:`FontBox_${familyHash(f.familyName)}`}}>Aa Бб Әә 123</div><div className="variants">{f.variants.map(v=><span key={v.id}>{v.subfamilyName||'Regular'}<button onClick={()=>onDelete(v)} aria-label={`Delete ${v.subfamilyName}`}><X/></button></span>)}</div></article>)}</div>}</section>}
 
-function NavButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
-  return <button className={active ? 'active' : ''} onClick={onClick}>{icon}<span>{label}</span></button>
-}
-
-type SheetProps = { font: StoredFont; text: string; settings: ExportSettings; setSettings: (s: ExportSettings) => void; onClose: () => void; onExport: () => void }
-function ExportSheet({ font, text, settings, setSettings, onClose, onExport }: SheetProps) {
-  const patch = (value: Partial<ExportSettings>) => setSettings({ ...settings, ...value })
-  return <div className="sheet-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><section className="sheet" role="dialog" aria-modal="true" aria-label="Export PNG settings">
-    <div className="sheet-handle"/><div className="sheet-title"><div><p className="eyebrow">Export PNG</p><h2>{font.name}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20}/></button></div>
-    <div className="export-sample" style={{ fontFamily: `"${fontFamilyFor(font.id)}"`, color: settings.color, textAlign: settings.alignment }}>{text || 'Your text'}</div>
-    <div className="control"><div><label htmlFor="size">Text size</label><output>{settings.size}px</output></div><input id="size" type="range" min="48" max="320" step="4" value={settings.size} onChange={e => patch({ size: Number(e.target.value) })}/></div>
-    <div className="control"><div><label htmlFor="padding">Padding</label><output>{settings.padding}px</output></div><input id="padding" type="range" min="24" max="240" step="8" value={settings.padding} onChange={e => patch({ padding: Number(e.target.value) })}/></div>
-    <div className="control-row"><div><label htmlFor="color">Text color</label><div className="color-input"><input id="color" type="color" value={settings.color} onChange={e => patch({ color: e.target.value })}/><span>{settings.color.toUpperCase()}</span></div></div><div><span className="control-label">Alignment</span><div className="align-buttons">{([['left',AlignLeft],['center',AlignCenter],['right',AlignRight]] as const).map(([value, Icon]) => <button key={value} className={settings.alignment === value ? 'active' : ''} onClick={() => patch({ alignment: value })} aria-label={`Align ${value}`}><Icon size={19}/></button>)}</div></div></div>
-    <label className="toggle-row"><div><strong>Transparent background</strong><span>Best for layering in social apps</span></div><input type="checkbox" checked={settings.transparent} onChange={e => patch({ transparent: e.target.checked })}/></label>
-    <button className="primary-button export-final" onClick={onExport}><Download size={19}/> Export high-resolution PNG</button>
-  </section></div>
-}
-
-export default App
+function ToolSheet({tool,close,families,family,variant,selectFamily,selectVariant,style,setStyle,color,recent}:{tool:Exclude<Tool,null>;close:()=>void;families:FontFamily[];family?:FontFamily;variant?:StoredFont;selectFamily:(id:string)=>void;selectVariant:(id:string)=>void;style:TextStyle;setStyle:(p:Partial<TextStyle>)=>void;color:(c:string)=>void;recent:string[]}){const marker=(p:Partial<TextStyle['marker']>)=>setStyle({marker:{...style.marker,...p}}),stroke=(p:Partial<TextStyle['stroke']>)=>setStyle({stroke:{...style.stroke,...p}}),shadow=(p:Partial<TextStyle['shadow']>)=>setStyle({shadow:{...style.shadow,...p}});return <div className="scrim" onMouseDown={e=>e.target===e.currentTarget&&close()}><section className="sheet"><i/><div className="sheet-head"><h2>{tool[0].toUpperCase()+tool.slice(1)}</h2><button onClick={close}><X/></button></div>
+ {tool==='font'&&<div className="choice-list">{families.map(f=><button className={family?.id===f.id?'selected':''} onClick={()=>{selectFamily(f.id);close()}} key={f.id}>{f.familyName}<small>{f.variants.length} styles</small></button>)}</div>}
+ {tool==='style'&&<div className="choice-grid">{family?.variants.map(v=><button key={v.id} className={variant?.id===v.id?'selected':''} onClick={()=>{selectVariant(v.id);close()}}>{v.subfamilyName||'Regular'}<small>{v.weight} · {v.style}</small></button>)}</div>}
+ {tool==='color'&&<ColorPanel value={style.color} onChange={color} recent={recent}/>} 
+ {tool==='marker'&&<><Segments values={['off','solid','rounded','underline']} value={style.marker.mode} onChange={v=>marker({mode:v as TextStyle['marker']['mode']})}/>{style.marker.mode!=='off'&&<><ColorPanel value={style.marker.color} onChange={v=>marker({color:v})}/><Range label="Opacity" value={style.marker.opacity} min={0} max={1} step={.05} onChange={v=>marker({opacity:v})}/><Range label="Horizontal padding" value={style.marker.paddingX} min={0} max={60} onChange={v=>marker({paddingX:v})}/><Range label="Vertical padding" value={style.marker.paddingY} min={0} max={30} onChange={v=>marker({paddingY:v})}/><Range label="Corner radius" value={style.marker.radius} min={0} max={40} onChange={v=>marker({radius:v})}/></>}</>}
+ {tool==='case'&&<Segments values={['original','upper','lower','capitalize']} labels={['Aa','AA','aa','Aa Words']} value={style.caseMode} onChange={v=>setStyle({caseMode:v as TextStyle['caseMode']})}/>} 
+ {tool==='curve'&&<><Range label="Curve" value={style.curve} min={-100} max={100} onChange={v=>setStyle({curve:v})}/><button className="reset" onClick={()=>setStyle({curve:0})}>Reset to straight</button></>}
+ {tool==='stroke'&&<><Segments values={['off','on']} value={style.stroke.enabled?'on':'off'} onChange={v=>stroke({enabled:v==='on'})}/>{style.stroke.enabled&&<><ColorPanel value={style.stroke.color} onChange={v=>stroke({color:v})}/><Range label="Width" value={style.stroke.width} min={.5} max={12} step={.5} onChange={v=>stroke({width:v})}/></>}</>}
+ {tool==='shadow'&&<><Segments values={['off','on']} value={style.shadow.enabled?'on':'off'} onChange={v=>shadow({enabled:v==='on'})}/>{style.shadow.enabled&&<><ColorPanel value={style.shadow.color} onChange={v=>shadow({color:v})}/><Range label="Opacity" value={style.shadow.opacity} min={0} max={1} step={.05} onChange={v=>shadow({opacity:v})}/><Range label="Blur" value={style.shadow.blur} min={0} max={40} onChange={v=>shadow({blur:v})}/><Range label="Horizontal" value={style.shadow.x} min={-30} max={30} onChange={v=>shadow({x:v})}/><Range label="Vertical" value={style.shadow.y} min={-30} max={30} onChange={v=>shadow({y:v})}/></>}</>}
+ {tool==='spacing'&&<><Range label="Letter spacing" value={style.letterSpacing} min={-5} max={30} step={.5} onChange={v=>setStyle({letterSpacing:v})}/><Range label="Line height" value={style.lineHeight} min={.8} max={2} step={.05} onChange={v=>setStyle({lineHeight:v})}/><Range label="Copy padding" value={style.padding} min={0} max={160} step={4} onChange={v=>setStyle({padding:v})}/></>}
+ {tool==='align'&&<div className="align-large">{([['left',AlignLeft],['center',AlignCenter],['right',AlignRight]] as const).map(([v,I])=><button className={style.alignment===v?'selected':''} onClick={()=>setStyle({alignment:v})} key={v}><I/>{v}</button>)}</div>}
+ </section></div>}
+function Range({label,value,min,max,step=1,onChange}:{label:string;value:number;min:number;max:number;step?:number;onChange:(n:number)=>void}){return <label className="range"><span>{label}<output>{Math.round(value*100)/100}</output></span><input type="range" value={value} min={min} max={max} step={step} onChange={e=>onChange(Number(e.target.value))}/></label>}
+function Segments({values,labels,value,onChange}:{values:string[];labels?:string[];value:string;onChange:(s:string)=>void}){return <div className="segments">{values.map((v,i)=><button className={value===v?'selected':''} onClick={()=>onChange(v)} key={v}>{labels?.[i]||v[0].toUpperCase()+v.slice(1)}</button>)}</div>}
+function ColorPanel({value,onChange,recent=[]}:{value:string;onChange:(s:string)=>void;recent?:string[]}){return <div className="colors"><label><input type="color" value={value} onChange={e=>onChange(e.target.value)}/><input type="text" value={value.toUpperCase()} maxLength={7} onChange={e=>/^#[0-9a-f]{6}$/i.test(e.target.value)&&onChange(e.target.value)}/></label>{recent.length>0&&<div className="swatches">{recent.map(c=><button key={c} style={{background:c}} onClick={()=>onChange(c)} aria-label={`Use ${c}`}/>)}</div>}</div>}
+function FallbackSheet({blob,close}:{blob:Blob;close:()=>void}){async function share(){const file=new File([blob],'fontbox.png',{type:'image/png'});if(navigator.share&&navigator.canShare?.({files:[file]}))await navigator.share({files:[file]});else saveBlob(blob,'fontbox.png')}return <div className="scrim"><section className="sheet fallback"><i/><div className="sheet-head"><div><h2>Copy isn’t available</h2><p>Save or share the same transparent PNG instead.</p></div><button onClick={close}><X/></button></div><button onClick={()=>saveBlob(blob,'fontbox.png')}><Download/>Save PNG</button><button onClick={share}><Share2/>Share</button></section></div>}
