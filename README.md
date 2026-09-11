@@ -19,3 +19,4 @@ Use `npm run build` to create the offline-ready production build in `dist`.
 - PNG export resolution: `EXPORT_SCALE` in `src/lib/pngExport.ts`
 
 FontBox contains no bundled or external fonts, API calls, accounts, analytics, or backend services.
+# FontBox
